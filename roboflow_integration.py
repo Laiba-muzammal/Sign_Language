@@ -27,7 +27,7 @@ class RoboFlowPredictor:
                     os.unlink(temp_path)
 
                     if response.status_code==200:
-                        return self.parse_predication(response.json())
+                        return self.parse_prediction(response.json())
                     else:
                         print (f"API ERROR: {response.status_code}-{response.text}")
                         return None, 0

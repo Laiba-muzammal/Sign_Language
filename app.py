@@ -10,125 +10,125 @@ from dotenv import load_dotenv
 from camera_utils import extract_roi, draw_roi, frame_to_base64
 from roboflow_integration import RoboflowPredictor
 
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# Initialize Roboflow Predictor
+# Initialize Roboflow predictor
 roboflow_api_key = os.getenv('ROBOFLOW_API_KEY')
 model_id = os.getenv('ROBOFLOW_MODEL_ID')
 version_number = os.getenv('ROBOFLOW_VERSION')
 
 predictor = RoboflowPredictor(roboflow_api_key, model_id, version_number)
 
+# Store translation history
 translation_history = []
-translate=""
+current_translation = ""
 
 @app.route('/')
 def index():
+    """Render the main page"""
     return render_template('index.html')
 
 @app.route('/api/translate', methods=['POST'])
 def translate_image():
-
+    """API endpoint to translate sign language image"""
     global current_translation
     
     try:
-        data= request.get_json()
+        # Get image data from request
+        data = request.get_json()
         if not data or 'image' not in data:
-            return jsonify({'error': 'No image provided'}), 400
-
-        image_data = data['image'].split(",")[1]
+            return jsonify({'error': 'No image data provided'}), 400
+        
+        # Extract base64 image data
+        image_data = data['image'].split(',')[1]  # Remove data:image/jpeg;base64,
         image_bytes = base64.b64decode(image_data)
-
+        
+        # Convert to OpenCV format
         image = Image.open(io.BytesIO(image_bytes))
-        open_cv_image = np.array(image ,cv2.COLOR_RGB2BGR)
-       
-        sign, confidience = predictor.predict(open_cv_image)
-
-        response = {
+        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        # Process image and get prediction
+        sign, confidence = predictor.predict_frame(frame)
+        
+        response_data = {
             'translation': current_translation,
             'success': False,
             'confidence': 0
         }
-
-        if sign and confidience >0.6:
-            response['translation'] = current_translation
-            response['success'] = True
-            response['confidence'] = confidience
-
+        
+        if sign and confidence > 0.6:  # Confidence threshold
+            response_data['sign'] = sign
+            response_data['confidence'] = confidence
+            response_data['success'] = True
+            
             if sign.lower() == 'space':
                 current_translation += " "
             elif sign.lower() == 'clear':
                 current_translation = ""
             else:
                 current_translation += sign + " "
-
+            
+            # Add to history if we have a meaningful translation
             if current_translation.strip():
                 translation_history.append({
                     'text': current_translation,
                     'timestamp': time.time(),
-                    'confidence': response['confidence']
+                    'confidence': confidence
                 })
-
-            response['translation'] = current_translation
-
-        return jsonify(response)
-
+            
+            response_data['translation'] = current_translation
+            
+        return jsonify(response_data)
+            
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-    
-@app.route('/api/history', methods=['GET', 'DELETE'])
-def get_history():
 
+@app.route('/api/translation', methods=['GET', 'POST', 'DELETE'])
+def manage_translation():
+    """API endpoint to get, update, or clear translation"""
+    global current_translation
+    
+    if request.method == 'GET':
+        return jsonify({
+            'current_translation': current_translation,
+            'history': translation_history[-10:]  # Last 10 translations
+        })
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        if data and 'text' in data:
+            current_translation = data['text']
+            return jsonify({'success': True, 'translation': current_translation})
+        return jsonify({'error': 'No text provided'}), 400
+    
+    elif request.method == 'DELETE':
+        current_translation = ""
+        return jsonify({'success': True, 'message': 'Translation cleared'})
+
+@app.route('/api/history', methods=['GET', 'DELETE'])
+def manage_history():
+    """API endpoint to get or clear history"""
     global translation_history
+    
     if request.method == 'GET':
         return jsonify({'history': translation_history})
     
     elif request.method == 'DELETE':
-        translation_history.clear()
-        return jsonify({'message': 'Translation history cleared'}), 200
-    
-@app.route('/api/debug/camera', methods=['GET'])
-def debug_camera():
-    try:
-        test_image= np.zeros((300,300,3), dtype=np.uint8)
-        cv2.putText(test_image, "DEBUG", (50,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
-        roi = extract_roi((50, 50, 200, 200), test_image)
-
-        return jsonify({
-            ' status': 'Camera utils working',
-            'image_shape': str(test_image.shape),
-            'roi_shape': str(roi.shape) if roi is not None else 'None'
-        })
-
-    except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-@app.route('/api/translate', methods=['GET','POST','DELETE'])
-def manage_translation():
-    global current_translation
-    if request.method == 'GET':
-        return jsonify({ 'current_translation': current_translation,
-            'history': translation_history[-10:] })
-    
-    elif request.method == 'POST':
-        data = request.get_json()
-        if not data or 'text' not in data:
-            return jsonify({'error': 'No text provided'}), 400
-        current_translation = data['text']
-        return jsonify({'message': 'Translation updated', 'translation': current_translation})
-    
-    elif request.method == 'DELETE':
-        current_translation = ""
-        return jsonify({'message': 'Translation cleared'}), 200
+        translation_history = []
+        return jsonify({'success': True, 'message': 'History cleared'})
 
 @app.route('/api/debug/test', methods=['GET'])
 def debug_test():
+    """Test endpoint to check if API is working"""
     try:
-        test_image= np.zeros((300,300,3), dtype=np.uint8)
-        cv2.putText(test_image, "TEST", (50,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
-
+        # Create a test image
+        test_image = np.zeros((300, 300, 3), dtype=np.uint8)
+        cv2.putText(test_image, "TEST", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
+        
+        # Test prediction
         sign, confidence = predictor.predict_frame(test_image)
         
         return jsonify({
@@ -138,9 +138,27 @@ def debug_test():
             'model_id': model_id,
             'api_key_set': bool(roboflow_api_key)
         })
-    
     except Exception as e:
-            return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/camera', methods=['GET'])
+def debug_camera():
+    """Test if camera utils are working"""
+    try:
+        # Create a test image
+        test_image = np.zeros((300, 300, 3), dtype=np.uint8)
+        cv2.putText(test_image, "DEBUG", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
+        
+        # Test ROI extraction
+        roi = extract_roi(test_image, (50, 50, 200, 200))
+        
+        return jsonify({
+            'status': 'Camera utils working',
+            'image_shape': str(test_image.shape),
+            'roi_shape': str(roi.shape) if roi is not None else 'None'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
